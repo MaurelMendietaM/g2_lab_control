@@ -1,9 +1,11 @@
 #!/usr/bin/python
 import rospy
 import numpy as np
+import math
 from std_msgs.msg import String
 from geometry_msgs.msg import Twist, Point
 from nav_msgs.msg import Odometry
+from tf.transformations import euler_from_quaternion as efq
 
 class NodePosition():
     def __init__(self):
@@ -25,38 +27,45 @@ class NodePosition():
 
     def initParameters(self):
         #Aqui inicializaremos todas las variables del nodo
-        # Para los diferentes casos se cambiaron las contantes para ver como actuaba el robot en funcion de los cambios realizados
-        #CASO 1: kp=5 ki=0 kd=0
-        #CASO 2: kp=5 ki=3 kd=0
-        #CASO 3: kp=5 ki=3 kd=4
-        self.kp = 5
-        self.ki = 3
-        self.kd = 4
+        self.kp = 1
+        self.ki = 1
+        self.kd = 1
         self.xe_prev = 0
         self.v_limit = 0.5
         self.topic_odom = "/odometry/filtered"
-        self.topic_set = "/setpoint"
+        # self.topic_set = "/setpoint" 
         self.topic_vel = "/cmd_vel"
         self.topic_error = "/error"
         self.change_odom = False
         self.change_set = False
         self.rate = self.rospy.Rate(30)
+        #Se asigna el tiempo 
+        self.t=np.linspace(0,0.1,20)
+        #Se plantea el camino o trayectoria del robot
+        self.xd=4*np.cos(np.linspace(-2*math.pi,math.pi,len(self.t)+1))
+        self.yd=4*np.sin(np.linspace(-2+math.pi,math.pi,len(self.t)+1))      
+        #--------------------------------------------------
         return
+
 
     def callback_odom(self, msg):
         self.xr = msg.pose.pose.position.x
+        self.yr = msg.pose.pose.position.y
+        quat = msg.pose.pose.orientation
+        self.phi = efq([quat.x, quat.y, quat.z, quat.w])[2]
         self.change_odom = True
         return
 
-    def callback_set(self, msg):
-        self.xd = msg.x
-        self.change_set = True
-        return
+    #def callback_set(self, msg):
+       # self.xd = msg.x
+       #self.yd = msg.y
+       # self.change_set = True
+       #return
 
     def initSubscribers(self):
         #Aqui inicializaremos los suscriptrores
         self.sub_odom = self.rospy.Subscriber(self.topic_odom, Odometry, self.callback_odom)
-        self.sub_set = self.rospy.Subscriber(self.topic_set, Point, self.callback_set)
+        #self.sub_set = self.rospy.Subscriber(self.topic_set, Point, self.callback_set)
         return
 
     def initPublishers(self):
@@ -66,38 +75,50 @@ class NodePosition():
         return
 
     def controller(self):
-        self.xe = self.xd - self.xr
-        if abs(self.xe) <= 0.1:
-            self.v = 0
-        else:
-            self.dxe = self.xe_prev - self.xe
-            self.ixe = self.xe_prev + self.xe
-            self.v = (self.kp*self.xe) + (self.ki*self.ixe) + (self.kd*self.dxe)
-            self.v = self.v_limit*np.tanh(self.v_limit*self.v)
-        self.xe_prev = self.xe
+        for m in ((self.t)):
+            self.xe = self.xd[self.m] - self.xr
+            self.ye = self.yd[self.m] - self.yr
+            if abs(self.xe)<=(0.1) and abs(self.ye)<=(0.1):
+                    self.m=self.m+1
+        self.e = [[abs(self.xe)],
+                  [abs(self.ye)]]
+        self.K = [[1.5, 0],
+                  [0, 1.5]]
+        self.h = [[self.xd[self.m + 1] - self.xd[self.m]],
+                  [self.yd[self.m + 1] - self.yd[self.m]]]
+        self.jacob = [[np.cos(self.phi), -0.5*np.sin(self.phi)],
+                      [np.sin(self.phi),  0.5*np.cos(self.phi)]]
+        self.vc = np.matmul(np.linalg.inv(self.jacob), np.add(np.matmul(self.K, self.e), self.h))
+        self.v = 0.5*np.tanh(0.5*self.vc[0][0])
+        self.w = 0.3*np.tanh(0.5*self.vc[1][0])
         return
 
     def makeVelMsg(self):
         self.msg_vel = Twist()
         self.msg_vel.linear.x = self.v
+        self.msg_vel.angular.z = self.w
         return
 
     def makeErrorMsg(self):
         self.msg_error = Point()
         self.msg_error.x = self.xe
+        self.msg_error.y = self.ye
         return
 
     def main(self):
         #Aqui desarrollaremos el codigo principal
         print("Nodo OK")
+        #Inicializo la varible de cambio
+        self.m = 0
         while not self.rospy.is_shutdown():
-            if self.change_odom and self.change_set:
+            #Se quitaron los self.change_set
+            if self.change_odom:
                 self.controller()
                 self.makeVelMsg()
                 self.makeErrorMsg()
                 self.pub_vel.publish(self.msg_vel)
                 self.pub_error.publish(self.msg_error)
-                self.change_odom = self.change_set = False
+                self.change_odom = False
             self.rate.sleep()
 
 if __name__=="__main__":
